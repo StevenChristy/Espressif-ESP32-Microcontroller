@@ -20,143 +20,164 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 */
+#include "ULPProgrammer.h"
+#include <string.h>
 
-// Don't forget to change CONFIG_ULP_COPROC_RESERVE_MEM to a reasonable value to 
-// hold your program. 1024 should be plenty, higher if needed.
-
-#include <rom/ets_sys.h>
-#include <rom/gpio.h>
-#include <esp32/ulp.h>
-#include <soc/soc.h>
-#include <soc/rtc.h>
-#include <soc/rtc_cntl_reg.h>
-#include <driver/rtc_io.h>
-#include <esp_log.h>
-
-const ulp_insn_t preamble[] = {
-  M_LABEL(1)
-};
-const ulp_insn_t postamble[] = {
-  M_BX(1),                // goto 1
-  I_HALT()
-};
-
-class ULPProgrammer
+void ULPProgrammer::insert_loop_start()
 {
-private:
-  ulp_insn_t *program;
-  size_t ip;
-  size_t max;
+  const ulp_insn_t loop_preamble[] = {
+    I_MOVI(R3, 0),
+    M_LABEL(1)
+  };
+  copy_instructions(&loop_preamble[0], sizeof(loop_preamble)/sizeof(ulp_insn_t));
+}
 
-  size_t nextIP()
+void ULPProgrammer::insert_loop_end(int32_t finalDelayClocks)
+{
+  const ulp_insn_t loop_postamble[] = {
+    I_LD(R0, R3, 1),        // R0 <- RTC_SLOW_MEM[R3+1], R3 should be 0
+    M_BL(2, 1),             // goto label 2 if R0 < 1
+    M_BX(1),
+    M_LABEL(2)
+  };
+  insert_delay(finalDelayClocks-5);
+  copy_instructions(&loop_postamble[0], sizeof(loop_postamble)/sizeof(ulp_insn_t));
+}
+
+void ULPProgrammer::insert_program_end()
+{
+  const ulp_insn_t halt[] = {
+    I_ST(R3, R3, 0),    // RTC_SLOW_MEM[R3+0] = R3
+    I_END(),
+    I_HALT()
+  };
+  copy_instructions(&halt[0], sizeof(halt)/sizeof(ulp_insn_t));
+}
+
+
+size_t ULPProgrammer::nextIP()
+{
+  if ( ip < max )
+    return ip++;
+  return max-1;
+}
+
+void ULPProgrammer::copy_instructions(const ulp_insn_t *prog, unsigned int count)
+{
+  for ( int x = 0; x < count; x ++ )
   {
-    if ( ip < max )
-      return ip++;
-    return max-1;
+      program[nextIP()] = prog[x];
   }
+}
 
-  void copy_instructions(const ulp_insn_t *prog, unsigned int count)
+void ULPProgrammer::insert_gpio( uint32_t n, uint32_t on, int32_t &clockCounter)
+{
+  const ulp_insn_t gpio[] = {
+    I_WR_REG(RTC_GPIO_OUT_REG, n, n, on) // RTC_GPIO_X + 14 = bit
+  };
+  clockCounter--;
+
+  program[nextIP()] = gpio[0];
+}
+
+void ULPProgrammer::insert_small_delay(uint16_t clocks)
+{
+  const ulp_insn_t delay[] = {
+      I_DELAY(clocks)
+  };
+  program[nextIP()] = delay[0];
+}
+
+void ULPProgrammer::insert_delay(int32_t clocks) {
+  while ( clocks > 65535 )
   {
-    for ( int x = 0; x < count; x ++ )
+    insert_small_delay(65535);
+    clocks -= 65535;
+  }
+  if ( clocks > 0 )
+    insert_small_delay((uint16_t)clocks);
+}
+
+ULPProgrammer::ULPProgrammer()
+{
+  max = 2048;
+  program = new ulp_insn_t[max];
+  ip = 0;
+}
+
+bool ULPProgrammer::createProgram()
+{
+  stopProgram();
+  clearMemory();
+  if ( ip < max )
+  {
+    auto err = ulp_process_macros_and_load(32, program, &ip);
+    if (err == ESP_OK)
     {
-        program[nextIP()] = prog[x];
-    }
-  }
-  void insert_gpio( uint32_t n, uint32_t on, int32_t &clockCounter)
-  {
-    const ulp_insn_t gpio[] = {
-      I_WR_REG(RTC_GPIO_OUT_REG, n, n, on) // RTC_GPIO_X + 14 = bit
-    };
-    clockCounter--;
-
-    program[nextIP()] = gpio[0];
-  }
-
-  void insert_small_delay(uint16_t clocks)
-  {
-    const ulp_insn_t delay[] = {
-        I_DELAY(clocks)
-    };
-    program[nextIP()] = delay[0];
-  }
-
-  void insert_delay(int32_t clocks) {
-    while ( clocks > 65535 )
-    {
-      insert_small_delay(65535);
-      clocks -= 65535;
-    }
-    if ( clocks > 0 )
-      insert_small_delay((uint16_t)clocks);
-  }
-
-public:
-  ULPProgrammer()
-  {
-    max = 2048;
-    program = new ulp_insn_t[max];
-    ip = 0;
-  }
-
-  bool PWM( gpio_num_t gpio, double f, double d )
-  {
-    if ( rtc_gpio_is_valid_gpio(gpio) )
-    {
-      copy_instructions(&preamble[0], sizeof(preamble)/sizeof(ulp_insn_t));
-
-      int32_t clocks = 8000000/f;
-      int32_t onTime = clocks * d;
-      int32_t offTime = clocks - onTime;
-
-      insert_gpio(rtc_gpio_desc[gpio].rtc_num+14,1,onTime);
-      insert_delay(onTime);
-      insert_gpio(rtc_gpio_desc[gpio].rtc_num+14,0,offTime);
-      insert_delay(offTime-1); // -1 for the jump to beginning
-      copy_instructions(&postamble[0], sizeof(postamble)/sizeof(ulp_insn_t));
+      RTC_SLOW_MEM[2] = 1; // indicate program loaded.
       return true;
     }
     else
     {
-      ESP_LOGI("ULPProg", "GPIO must be an RTC_GPIO.");
+      ESP_ERROR_CHECK(err);
     }
-    return false;
   }
-
-  void Program()
+  else
   {
-    if ( ip < max )
-    {
-      auto err = ulp_process_macros_and_load(0, program, &ip);
-      if (err == ESP_OK)
-      {
-        ESP_ERROR_CHECK(ulp_run(0));
-      }
-      else
-      {
-        ESP_ERROR_CHECK(err);
-      }
-    }
-    else
-    {
-      ESP_LOGI("ULPProg", "Program size overflow.");
-    }
+    ESP_LOGI("ULPProg", "Program size overflow.");
   }
+  return false;
+}
 
-  ~ULPProgrammer()
-  {
-    delete [] program;
-  }
-};
-
-void test_ulp()
+ULPProgrammer::~ULPProgrammer()
 {
-  ESP_ERROR_CHECK(rtc_gpio_init(GPIO_NUM_2));
-  ESP_ERROR_CHECK(rtc_gpio_set_direction(GPIO_NUM_2, RTC_GPIO_MODE_OUTPUT_ONLY));
-  ESP_ERROR_CHECK(rtc_gpio_set_level(GPIO_NUM_2,0));
+  delete [] program;
+}
 
-  ULPProgrammer ulp;
-  if ( ulp.PWM(GPIO_NUM_2, 100, 0.01) )
+void ULPProgrammer::clearMemory()
+{
+  memset(RTC_SLOW_MEM, 0, CONFIG_ULP_COPROC_RESERVE_MEM);
+}
+
+bool ULPProgrammer::isProgramRunning()
+{
+  return ( RTC_SLOW_MEM[0] & UINT16_MAX ) > 0;
+}
+
+bool ULPProgrammer::isProgramLoaded()
+{
+  return RTC_SLOW_MEM[2];
+}
+
+void ULPProgrammer::stopProgram()
+{
+  if ( isProgramRunning() && isProgramLoaded() )
   {
-    ulp.Program();
+    ESP_LOGI("ULPProg", "Stopping program");
+    RTC_SLOW_MEM[1] = 0; // signal stop
+    while ( isProgramRunning() )
+      ets_delay_us(100);
+    ESP_LOGI("ULPProg", "Stopped");
   }
+}
+
+void ULPProgrammer::signalStopProgram()
+{
+  if ( isProgramRunning() )
+  {
+    RTC_SLOW_MEM[1] = 0; // signal stop
+  }
+}
+
+bool ULPProgrammer::startProgram()
+{
+  if ( !isProgramRunning() && isProgramLoaded() )
+  {
+    RTC_SLOW_MEM[0] = 1;
+    RTC_SLOW_MEM[1] = 1;
+    auto err = ulp_run(32);
+    if ( err == ESP_OK )
+      return true;
+  }
+  return false;
 }
