@@ -88,7 +88,7 @@ void ULPProgrammer::insert_small_delay(uint16_t clocks)
 }
 
 void ULPProgrammer::insert_delay(int32_t clocks) {
-  while ( clocks > 65529 )
+  while ( clocks > 65535 )
   {
     insert_small_delay(65529);
     clocks -= 65535;
