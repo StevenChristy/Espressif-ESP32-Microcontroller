@@ -17,7 +17,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-// Don't forget to change CONFIG_ULP_COPROC_RESERVE_MEM to a reasonable value to 
+// Don't forget to change CONFIG_ULP_COPROC_RESERVE_MEM to a reasonable value to
 // hold your program. 1024 should be plenty, higher if needed.
 
 #include "ULPProgrammer.h"
@@ -41,7 +41,11 @@ public:
 
       insert_loop_start();
 
-      int32_t clocks = 8000000/f;
+      uint32_t rtc_8md256_period = rtc_clk_cal(RTC_CAL_8MD256, 100);
+      uint32_t rtc_fast_freq_hz = 1000000ULL * (1 << RTC_CLK_CAL_FRACT) * 256 / rtc_8md256_period;
+      ESP_LOGI("ULP_PWM", "Found clock frequency %u", rtc_fast_freq_hz);
+      uint32_t clocks = rtc_fast_freq_hz/f;
+
       int32_t onTime = clocks * d;
       int32_t offTime = clocks - onTime;
 
@@ -49,9 +53,8 @@ public:
       insert_delay(onTime);
       insert_gpio(rtc_gpio_desc[gpio].rtc_num+14,0,offTime);
       insert_loop_end(offTime);
-
       insert_program_end();
-
+      
       stopProgram(); // Hard stop
 
       if ( createProgram() )
@@ -69,9 +72,7 @@ public:
     }
     return false;
   }
-
 };
-
 
 void test_ulp()
 {

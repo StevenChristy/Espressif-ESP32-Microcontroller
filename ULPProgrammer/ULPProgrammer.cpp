@@ -18,7 +18,6 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
 */
 #include "ULPProgrammer.h"
 #include <string.h>
@@ -35,12 +34,12 @@ void ULPProgrammer::insert_loop_start()
 void ULPProgrammer::insert_loop_end(int32_t finalDelayClocks)
 {
   const ulp_insn_t loop_postamble[] = {
-    I_LD(R0, R3, 1),        // R0 <- RTC_SLOW_MEM[R3+1], R3 should be 0
-    M_BL(2, 1),             // goto label 2 if R0 < 1
-    M_BX(1),
+    I_LD(R0, R3, 1),        // R0 <- RTC_SLOW_MEM[R3+1], R3 should be 0 - 8 clocks
+    M_BL(2, 1),             // goto label 2 if R0 < 1 - 4 clocks
+    M_BX(1),                // 4 - clocks
     M_LABEL(2)
   };
-  insert_delay(finalDelayClocks-5);
+  insert_delay(finalDelayClocks-16);
   copy_instructions(&loop_postamble[0], sizeof(loop_postamble)/sizeof(ulp_insn_t));
 }
 
@@ -75,7 +74,7 @@ void ULPProgrammer::insert_gpio( uint32_t n, uint32_t on, int32_t &clockCounter)
   const ulp_insn_t gpio[] = {
     I_WR_REG(RTC_GPIO_OUT_REG, n, n, on) // RTC_GPIO_X + 14 = bit
   };
-  clockCounter--;
+  clockCounter -= 12;
 
   program[nextIP()] = gpio[0];
 }
@@ -89,13 +88,13 @@ void ULPProgrammer::insert_small_delay(uint16_t clocks)
 }
 
 void ULPProgrammer::insert_delay(int32_t clocks) {
-  while ( clocks > 65535 )
+  while ( clocks > 65529 )
   {
-    insert_small_delay(65535);
+    insert_small_delay(65529);
     clocks -= 65535;
   }
-  if ( clocks > 0 )
-    insert_small_delay((uint16_t)clocks);
+  if ( (clocks-6) > 0 )
+    insert_small_delay((uint16_t)clocks-6);
 }
 
 ULPProgrammer::ULPProgrammer()
@@ -151,13 +150,11 @@ bool ULPProgrammer::isProgramLoaded()
 
 void ULPProgrammer::stopProgram()
 {
-  if ( isProgramRunning() && isProgramLoaded() )
+  while ( isProgramRunning() && isProgramLoaded() )
   {
     ESP_LOGI("ULPProg", "Stopping program");
     RTC_SLOW_MEM[1] = 0; // signal stop
-    while ( isProgramRunning() )
-      ets_delay_us(100);
-    ESP_LOGI("ULPProg", "Stopped");
+    ets_delay_us(50);
   }
 }
 
@@ -178,6 +175,10 @@ bool ULPProgrammer::startProgram()
     auto err = ulp_run(32);
     if ( err == ESP_OK )
       return true;
+    else
+    {
+      ESP_ERROR_CHECK(err);
+    }
   }
   return false;
 }
