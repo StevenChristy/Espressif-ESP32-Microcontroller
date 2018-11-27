@@ -81,5 +81,6 @@ void test_ulp()
   ESP_ERROR_CHECK(rtc_gpio_set_level(GPIO_NUM_2,0));
 
   ULP_PWM ulp;
+  ulp.clearMemory(); // This should be called once in your program before creating a program the first time.
   ulp.PWM(GPIO_NUM_2, 100, 0.01);
 }
